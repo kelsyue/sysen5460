@@ -83,7 +83,7 @@ ui <- page_fluid(
       ),
       tags$p(style = "margin: 8px 0 0 0; font-size: 0.9rem; color: #333;",
              tags$strong("Metric 2: "),
-             "Annual mean declarations per state with 95% confidence intervals. The shaded band depicts the uncertainty around the mean."
+             "Annual mean declarations per state with 95% confidence intervals. This metric tracks whether the average disaster burden on U.S. states is growing over time."
       )
     )
   ),
