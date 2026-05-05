@@ -8,16 +8,13 @@ library(plotly)
 library(scales)
 library(lubridate)
 library(viridis)
+library(sf)
+library(tigris)
 library(leaflet)
 library(htmltools)
 library(shinyjs)
 
 `%||%` <- function(a, b) if (!is.null(a)) a else b
-
-has_sf <- requireNamespace("sf", quietly = TRUE)
-has_tigris <- requireNamespace("tigris", quietly = TRUE)
-if (has_sf) library(sf)
-if (has_tigris) library(tigris)
 
 # =============================================================================
 # DATA LOADING & PREPROCESSING
@@ -116,6 +113,12 @@ state_centroids <- data.frame(
 
 map_data_p3 <- state_summary %>% left_join(state_centroids, by = "state_abbr")
 
+p3_state_year <- scoped_data %>%
+  count(stateCode, year, name = "total_disasters")
+
+p3_state_hazard_year <- scoped_data %>%
+  count(stateCode, year, incidentType, name = "n")
+
 # V1 / V2 structures
 fema_sy <- scoped_data |>
   group_by(stateCode, year) |>
@@ -134,6 +137,21 @@ metric_choices <- c(
   "Total Declarations"    = "n_declarations",
   "Unique Incident Types" = "n_incident_types"
 )
+p3_metric_choices <- c(
+  "Total Disasters" = "total_disasters",
+  "Property Damage" = "dmg_billions",
+  "FEMA Assistance" = "total_fema_asst",
+  "Fatalities" = "total_fatalities"
+)
+mako_colors <- viridisLite::mako(256)
+mako_plotly_scale <- lapply(
+  seq_along(mako_colors),
+  function(i) list((i - 1) / (length(mako_colors) - 1), mako_colors[[i]])
+)
+mako_line <- "#3488A6"
+mako_line_dark <- "#35264C"
+mako_accent <- "#45BDAD"
+mako_highlight <- "#B4E4C3"
 
 # Spatial data for V2
 us_states_sf <- tryCatch(
@@ -179,23 +197,32 @@ ui <- page_fluid(
     heading_font = font_google("IBM Plex Sans")
   ),
   tags$head(tags$style(HTML("
-    body { background-color: #ffffff; }
-    .card { border: 1px solid #e0e0e0; box-shadow: none; }
-    .card-header { font-weight: 600; font-size: 0.95rem; background: #ffffff;
-                   border-bottom: 1px solid #e0e0e0; color: #222; }
-    .subtitle-text { color: #888; font-size: 0.85rem; padding: 4px 12px 8px 12px; }
+    body { background-color: #f7f9fb; color: #1b2430; }
+    .nav-tabs { border-bottom: 1px solid #d8e2ec; }
+    .nav-tabs .nav-link { color: #485464; border-radius: 7px 7px 0 0; }
+    .nav-tabs .nav-link.active {
+      color: #0b0405; background: #ffffff; border-color: #d8e2ec #d8e2ec #ffffff;
+      box-shadow: inset 0 3px 0 #3488A6;
+    }
+    .card {
+      border: 1px solid #d8e2ec; border-radius: 8px;
+      box-shadow: 0 8px 24px rgba(30, 44, 64, 0.06); background: #ffffff;
+    }
+    .card-header { font-weight: 650; font-size: 0.95rem; background: #ffffff;
+                   border-bottom: 1px solid #e6edf3; color: #1b2430; }
+    .subtitle-text { color: #64748b; font-size: 0.85rem; padding: 4px 12px 8px 12px; }
     .sel-banner {
-      background: #fff8f0; border: 1.5px solid #ffd6a5; border-radius: 6px;
+      background: #eefaf7; border: 1.5px solid #8AD9B1; border-radius: 6px;
       padding: 10px 18px; margin-bottom: 14px;
-      font-size: 0.9rem; color: #b34700; font-weight: 500;
+      font-size: 0.9rem; color: #35264C; font-weight: 500;
     }
     .no-sel-hint {
-      color: #b0b8c1; font-size: 0.9rem; text-align: center; padding: 28px 12px;
-      background: #f8f9fa; border-radius: 6px; margin-bottom: 14px;
-      border: 1px dashed #dee2e6;
+      color: #7b8794; font-size: 0.9rem; text-align: center; padding: 28px 12px;
+      background: #f4f8fb; border-radius: 6px; margin-bottom: 14px;
+      border: 1px dashed #cbd8e3;
     }
     .analysis-text {
-      font-size: 0.88rem; color: #333; line-height: 1.7; margin: 0;
+      font-size: 0.88rem; color: #253042; line-height: 1.7; margin: 0;
     }
     .js-plotly-plot .plotly .cursor-crosshair { cursor: pointer !important; }
 
@@ -208,34 +235,34 @@ ui <- page_fluid(
     #map-controls {
       position: absolute; top: 16px; left: 50%; transform: translateX(-50%);
       z-index: 1000; display: flex; gap: 10px; align-items: center;
-      background: rgba(255,255,255,0.95); border-radius: 30px;
-      padding: 8px 20px; box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+      background: rgba(255,255,255,0.96); border: 1px solid #d8e2ec; border-radius: 8px;
+      padding: 8px 18px; box-shadow: 0 8px 24px rgba(30,44,64,0.12);
     }
     #state-panel {
       position: absolute; top: 80px; right: 20px; width: 360px;
       max-height: calc(100vh - 200px); overflow-y: auto;
-      background: rgba(255,255,255,0.97); border-radius: 16px;
-      box-shadow: 0 8px 32px rgba(0,0,0,0.18); z-index: 1000;
+      background: rgba(255,255,255,0.98); border: 1px solid #d8e2ec; border-radius: 8px;
+      box-shadow: 0 18px 42px rgba(30,44,64,0.18); z-index: 1000;
       padding: 20px; transition: all 0.3s ease; display: none;
     }
     #state-panel.visible { display: block; }
     .metric-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 16px; }
-    .metric-card { background: #f8f9fa; border-radius: 12px; padding: 12px; text-align: center; border-left: 3px solid #4a90d9; }
-    .metric-card.red    { border-left-color: #e74c3c; }
-    .metric-card.green  { border-left-color: #27ae60; }
-    .metric-card.orange { border-left-color: #e67e22; }
-    .metric-value { font-size: 20px; font-weight: 700; color: #1a1a2e; display: block; }
-    .metric-label { font-size: 10px; color: #666; text-transform: uppercase; letter-spacing: 0.5px; }
-    .trend-box { background: linear-gradient(135deg, #667eea22, #764ba222); border-radius: 12px; padding: 12px; margin-bottom: 16px; font-size: 13px; }
-    #map-legend { position: absolute; bottom: 30px; left: 20px; z-index: 1000; background: rgba(255,255,255,0.92); border-radius: 12px; padding: 12px; box-shadow: 0 4px 16px rgba(0,0,0,0.12); font-size: 12px; }
-    #map-instruction { position: absolute; bottom: 30px; right: 20px; z-index: 999; background: rgba(255,255,255,0.9); border-radius: 12px; padding: 14px; box-shadow: 0 4px 16px rgba(0,0,0,0.12); font-size: 13px; max-width: 200px; text-align: center; }
+    .metric-card { background: #f4f8fb; border-radius: 8px; padding: 12px; text-align: center; border-left: 3px solid #3488A6; }
+    .metric-card.red    { border-left-color: #35264C; }
+    .metric-card.green  { border-left-color: #45BDAD; }
+    .metric-card.orange { border-left-color: #8AD9B1; }
+    .metric-value { font-size: 20px; font-weight: 750; color: #0b0405; display: block; }
+    .metric-label { font-size: 10px; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; }
+    .trend-box { background: #edf8f7; border: 1px solid #c7ebe2; border-radius: 8px; padding: 12px; margin-bottom: 16px; font-size: 13px; }
+    #map-legend { position: absolute; bottom: 30px; left: 20px; z-index: 1000; background: rgba(255,255,255,0.94); border: 1px solid #d8e2ec; border-radius: 8px; padding: 12px; box-shadow: 0 8px 24px rgba(30,44,64,0.12); font-size: 12px; }
+    #map-instruction { position: absolute; bottom: 30px; right: 20px; z-index: 999; background: rgba(255,255,255,0.94); border: 1px solid #d8e2ec; border-radius: 8px; padding: 14px; box-shadow: 0 8px 24px rgba(30,44,64,0.12); font-size: 13px; max-width: 200px; text-align: center; }
 
     /* ABOUT */
     .about-container { max-width: 1100px; margin: 20px auto; padding: 0 20px 40px; }
-    .about-hero { background: linear-gradient(135deg, #1a1a2e, #16213e); color: white; border-radius: 20px; padding: 30px; margin-bottom: 25px; }
+    .about-hero { background: linear-gradient(135deg, #0B0405, #35264C 52%, #3488A6); color: white; border-radius: 8px; padding: 30px; margin-bottom: 25px; }
     .about-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
-    .about-card { background: #fff; border-radius: 16px; padding: 20px; box-shadow: 0 2px 12px rgba(0,0,0,0.08); border-top: 4px solid #4a90d9; }
-    .stat-badge { display: inline-block; background: #f0f4ff; color: #4a90d9; border-radius: 8px; padding: 2px 8px; font-size: 11px; font-weight: 600; margin: 0 4px 4px 0; }
+    .about-card { background: #fff; border-radius: 8px; padding: 20px; box-shadow: 0 8px 24px rgba(30,44,64,0.08); border-top: 4px solid #3488A6; }
+    .stat-badge { display: inline-block; background: #edf8f7; color: #35264C; border-radius: 6px; padding: 2px 8px; font-size: 11px; font-weight: 600; margin: 0 4px 4px 0; }
   "))),
   navset_tab(
     # ------------------------------------------------------------------
@@ -263,13 +290,13 @@ ui <- page_fluid(
         card_body(
           padding = "12px",
           tags$p(
-            style = "margin: 0; font-size: 0.9rem; color: #333;",
+            style = "margin: 0; font-size: 0.9rem; color: #253042;",
             tags$strong("Metric 1: "),
             "Total federal disaster declarations per U.S. state or territory (2000–2024). ",
             "A declaration means a disaster exceeded local response capacity, triggering federal aid."
           ),
           tags$p(
-            style = "margin: 8px 0 0 0; font-size: 0.9rem; color: #333;",
+            style = "margin: 8px 0 0 0; font-size: 0.9rem; color: #253042;",
             tags$strong("Metric 2: "),
             "Annual mean declarations per state with 95% confidence intervals. Tracks whether ",
             "the average disaster burden on U.S. states is growing over time."
@@ -278,10 +305,10 @@ ui <- page_fluid(
       ),
       layout_columns(
         fill = FALSE, col_widths = c(3, 3, 3, 3),
-        value_box(title = "Total Declarations", value = textOutput("vb_total"), theme = value_box_theme(bg = "#ffffff", fg = "#222222")),
-        value_box(title = "Most Common Incident", value = textOutput("vb_incident"), theme = value_box_theme(bg = "#ffffff", fg = "#222222")),
-        value_box(title = "States / Territories Affected", value = textOutput("vb_states"), theme = value_box_theme(bg = "#ffffff", fg = "#222222")),
-        value_box(title = "Most Recent Declaration", value = textOutput("vb_recent"), theme = value_box_theme(bg = "#ffffff", fg = "#222222"))
+        value_box(title = "Total Declarations", value = textOutput("vb_total"), theme = value_box_theme(bg = "#ffffff", fg = "#1b2430")),
+        value_box(title = "Most Common Incident", value = textOutput("vb_incident"), theme = value_box_theme(bg = "#ffffff", fg = "#1b2430")),
+        value_box(title = "States / Territories Affected", value = textOutput("vb_states"), theme = value_box_theme(bg = "#ffffff", fg = "#1b2430")),
+        value_box(title = "Most Recent Declaration", value = textOutput("vb_recent"), theme = value_box_theme(bg = "#ffffff", fg = "#1b2430"))
       ),
       layout_columns(
         col_widths = c(7, 5),
@@ -361,17 +388,17 @@ ui <- page_fluid(
           value_box(
             title = "Nearest Above-Average State (sf::st_distance)",
             value = textOutput("vb2_nearest"),
-            theme = value_box_theme(bg = "#ffffff", fg = "#222222")
+            theme = value_box_theme(bg = "#ffffff", fg = "#1b2430")
           ),
           value_box(
             title = "Neighbor Clustering Ratio (st_touches)",
             value = textOutput("vb2_cluster"),
-            theme = value_box_theme(bg = "#ffffff", fg = "#222222")
+            theme = value_box_theme(bg = "#ffffff", fg = "#1b2430")
           ),
           value_box(
             title = "Declaration Density (sf::st_area)",
             value = textOutput("vb2_density"),
-            theme = value_box_theme(bg = "#ffffff", fg = "#222222")
+            theme = value_box_theme(bg = "#ffffff", fg = "#1b2430")
           )
         ),
         layout_columns(
@@ -420,12 +447,7 @@ ui <- page_fluid(
           tags$label("Metric:"),
           selectInput("p3_map_metric", NULL,
             width = "160px",
-            choices = c(
-              "Total Disasters" = "total_disasters",
-              "Property Damage" = "dmg_billions",
-              "FEMA Assistance" = "total_fema_asst",
-              "Fatalities" = "total_fatalities"
-            )
+            choices = p3_metric_choices
           ),
           tags$label("Years:"),
           sliderInput("p3_year_range", NULL,
@@ -436,13 +458,13 @@ ui <- page_fluid(
         div(
           id = "state-panel",
           div(
-            style = "display:flex; justify-content:space-between; border-bottom:2px solid #f0f0f0; margin-bottom:12px; padding-bottom:8px;",
+            style = "display:flex; justify-content:space-between; border-bottom:2px solid #e6edf3; margin-bottom:12px; padding-bottom:8px;",
             div(
               h4(textOutput("p3_panel_state"), style = "margin:0;"),
-              p("FEMA Disaster Detail", style = "font-size:11px; color:#666; margin:0;")
+              p("FEMA Disaster Detail", style = "font-size:11px; color:#64748b; margin:0;")
             ),
             tags$button("✕",
-              style = "background:none; border:none; color:#999; cursor:pointer;",
+              style = "background:none; border:none; color:#64748b; cursor:pointer;",
               onclick = "document.getElementById('state-panel').classList.remove('visible');"
             )
           ),
@@ -461,8 +483,8 @@ ui <- page_fluid(
         ),
         div(
           id = "map-legend",
-          div(style = "font-weight:700; margin-bottom:5px;", "Disaster Frequency"),
-          div("● Low (Yellow)"), div("● High (Dark Red)")
+          div(style = "font-weight:700; margin-bottom:5px;", "Mako Metric Scale"),
+          div(style = "color:#35264C;", "● Low"), div(style = "color:#8AD9B1;", "● High")
         ),
         div(id = "map-instruction", "👆 Click a marker to explore state details")
       )
@@ -614,7 +636,7 @@ server <- function(input, output, session) {
     if (nrow(df) == 0) {
       return(plot_ly(
         type = "choropleth", locations = character(0),
-        locationmode = "USA-states", z = numeric(0), colorscale = "Blues"
+        locationmode = "USA-states", z = numeric(0), colorscale = mako_plotly_scale
       ) |>
         layout(
           geo = list(scope = "usa", showlakes = TRUE, lakecolor = "white", bgcolor = "white"),
@@ -630,7 +652,7 @@ server <- function(input, output, session) {
     plot_ly(df,
       type = "choropleth",
       locations = ~stateCode, locationmode = "USA-states",
-      z = ~ get(input$metric), colorscale = "Blues",
+      z = ~ get(input$metric), colorscale = mako_plotly_scale,
       colorbar = list(title = metric_label),
       hovertemplate = paste0("<b>%{location}</b><br>", metric_label, ": %{z}<extra></extra>")
     ) |>
@@ -662,22 +684,22 @@ server <- function(input, output, session) {
     plot_ly() |>
       add_ribbons(
         data = df, x = ~year, ymin = ~ci_lower, ymax = ~ci_upper,
-        fillcolor = "rgba(44,127,184,0.15)", line = list(color = "transparent"),
+        fillcolor = "rgba(52,136,166,0.18)", line = list(color = "transparent"),
         hoverinfo = "skip", showlegend = FALSE
       ) |>
       add_lines(
         data = df, x = ~year, y = ~mean_decl,
-        line = list(color = "#2c7fb8", width = 2),
+        line = list(color = mako_line, width = 2.5),
         hovertemplate = "<b>%{x}</b><br>Mean: %{y:.2f}<extra></extra>", showlegend = FALSE
       ) |>
       add_markers(
         data = df |> filter(!year %in% spike_years), x = ~year, y = ~mean_decl,
-        marker = list(color = "#2c7fb8", size = 5),
+        marker = list(color = mako_line, size = 5),
         hovertemplate = "<b>%{x}</b><br>Mean: %{y:.2f}<extra></extra>", showlegend = FALSE
       ) |>
       add_markers(
         data = df |> filter(year %in% spike_years), x = ~year, y = ~mean_decl,
-        marker = list(color = "#cc0000", size = 9),
+        marker = list(color = mako_highlight, size = 9, line = list(color = mako_line_dark, width = 1)),
         hovertemplate = "<b>Spike: %{x}</b><br>Mean: %{y:.2f}<extra></extra>", showlegend = FALSE
       ) |>
       layout(
@@ -722,6 +744,7 @@ server <- function(input, output, session) {
 
   panel2 <- reactive({
     f2 <- filtered2()
+    req(!is.null(us_states_sf))
     p <- expand.grid(
       stateCode = unique(us_states_sf$STUSPS),
       year      = seq(input$train_years2[1], input$train_years2[2])
@@ -739,9 +762,11 @@ server <- function(input, output, session) {
 
   sf_data2 <- reactive({
     req(!is.null(us_states_sf))
-    totals <- panel2() |>
+    p2 <- panel2()
+    totals <- p2 |>
       group_by(stateCode) |>
       summarise(total_decl = sum(n_declarations, na.rm = TRUE), .groups = "drop")
+
     us_states_sf |>
       left_join(totals, by = c("STUSPS" = "stateCode")) |>
       mutate(
@@ -829,9 +854,9 @@ server <- function(input, output, session) {
     sel <- sel_state_rv()
     paste0(
       "Incident: ", input$incident_type2, "  |  Declaration: ", input$decl_type2,
-      "  |  Viridis scale: purple = low, yellow = high  |  ",
+      "  |  Mako scale: dark = low, light = high  |  ",
       if (!is.null(sel)) {
-        paste0("Selected: ", sel, "  (orange border)")
+        paste0("Selected: ", sel, "  (Mako highlight border)")
       } else {
         "Click a state to explore spatial relationships"
       }
@@ -879,7 +904,7 @@ server <- function(input, output, session) {
         type = "choropleth", data = df,
         locations = ~STUSPS, locationmode = "USA-states",
         z = ~z_val, zmin = z_rng[1], zmax = z_rng[2],
-        colorscale = "Viridis", reversescale = FALSE,
+        colorscale = mako_plotly_scale, reversescale = FALSE,
         colorbar = list(title = df$z_label[1], thickness = 14),
         marker = list(line = list(color = "white", width = 0.5)),
         customdata = ~STUSPS, key = ~STUSPS,
@@ -888,15 +913,15 @@ server <- function(input, output, session) {
           "<br><i>Click to explore spatial relationships</i><extra></extra>"
         )
       )
-    # Highlight selected state with orange border
+    # Highlight selected state.
     if (!is.null(sel) && sel %in% df$STUSPS) {
       df_sel <- df |> filter(STUSPS == sel)
       p <- p |> add_trace(
         type = "choropleth", data = df_sel,
         locations = ~STUSPS, locationmode = "USA-states",
         z = ~z_val, zmin = z_rng[1], zmax = z_rng[2],
-        colorscale = "Viridis", showscale = FALSE,
-        marker = list(line = list(color = "#FF4500", width = 4)),
+        colorscale = mako_plotly_scale, showscale = FALSE,
+        marker = list(line = list(color = mako_highlight, width = 4)),
         customdata = ~STUSPS, key = ~STUSPS,
         hovertemplate = paste0(
           "<b>%{location}  ★ SELECTED</b><br>",
@@ -931,7 +956,7 @@ server <- function(input, output, session) {
         tags$span("Selected State: "),
         tags$strong(paste0(state_name, "  (", sel, ")")),
         tags$span(
-          style = "float:right; color:#c07030; font-size:0.8rem; font-weight:400;",
+          style = "float:right; color:#3488A6; font-size:0.8rem; font-weight:400;",
           "All charts and metrics below have updated"
         )
       )
@@ -1064,13 +1089,13 @@ server <- function(input, output, session) {
     p <- plot_ly() |>
       add_lines(
         data = sel_ts, x = ~year, y = ~n_declarations, name = sel,
-        line = list(color = "#FF4500", width = 2.5),
+        line = list(color = mako_highlight, width = 2.5),
         hovertemplate = paste0("<b>", sel, " (%{x})</b><br>Declarations: %{y}<extra></extra>")
       )
     if (nrow(nbr_ts) > 0) {
       p <- p |> add_lines(
         data = nbr_ts, x = ~year, y = ~mean_decl, name = "Neighbor Avg",
-        line = list(color = "#2c7fb8", width = 2, dash = "dot"),
+        line = list(color = mako_line, width = 2, dash = "dot"),
         hovertemplate = "<b>Neighbor Avg (%{x})</b><br>Mean: %{y:.1f}<extra></extra>"
       )
     }
@@ -1084,7 +1109,7 @@ server <- function(input, output, session) {
           x = peak$year, y = peak$n_declarations,
           text = paste0("Peak gap: ", round(peak$gap, 1)),
           showarrow = TRUE, arrowhead = 2, arrowsize = 0.8,
-          font = list(size = 11, color = "#555"), ax = 30, ay = -30
+          font = list(size = 11, color = mako_line_dark), ax = 30, ay = -30
         )
       }
     }
@@ -1106,7 +1131,7 @@ server <- function(input, output, session) {
     }
     paste0(
       "sf::st_distance() centroid-to-centroid distances from ", sel,
-      "  |  Blue diamonds = adjacent states  |  Dashed line = linear fit"
+      "  |  Mako diamonds = adjacent states  |  Dashed line = linear fit"
     )
   })
 
@@ -1153,7 +1178,7 @@ server <- function(input, output, session) {
       add_markers(
         data = non_nbr, x = ~dist_km, y = ~total_decl, text = ~stateCode,
         marker = list(
-          color = ifelse(non_nbr$above_avg, "#d73027", "#aaaaaa"),
+          color = ifelse(non_nbr$above_avg, mako_accent, "#a8b3bf"),
           size = 7, opacity = 0.75,
           line = list(color = "white", width = 0.5)
         ),
@@ -1164,7 +1189,7 @@ server <- function(input, output, session) {
       p <- p |> add_markers(
         data = nbr_df, x = ~dist_km, y = ~total_decl, text = ~stateCode,
         marker = list(
-          color = "#2c7fb8", size = 12, symbol = "diamond",
+          color = mako_line, size = 12, symbol = "diamond",
           line = list(color = "white", width = 1.5)
         ),
         name = "Adjacent (st_touches)",
@@ -1174,7 +1199,7 @@ server <- function(input, output, session) {
     if (!is.null(trend_df)) {
       p <- p |> add_lines(
         data = trend_df, x = ~dist_km, y = ~fitted,
-        line = list(color = "#888", dash = "dash", width = 1.5),
+        line = list(color = mako_line_dark, dash = "dash", width = 1.5),
         name = "Linear Trend", hoverinfo = "skip"
       )
     }
@@ -1321,41 +1346,103 @@ server <- function(input, output, session) {
   selected_p3_state <- reactiveVal(NULL)
 
   output$disaster_map <- renderLeaflet({
-    leaflet(options = leafletOptions(zoomControl = FALSE)) %>%
+    l <- leaflet(options = leafletOptions(zoomControl = FALSE)) %>%
       addProviderTiles("CartoDB.Positron") %>%
       setView(lng = -98.5, lat = 39.5, zoom = 4)
+
+    if (!is.null(us_states_sf)) {
+      l <- l %>%
+        addPolygons(
+          data = us_states_sf,
+          fillColor = "#eef3f7",
+          fillOpacity = 0.1,
+          color = "#8da2b2",
+          weight = 1,
+          layerId = ~STUSPS,
+          label = ~NAME,
+          highlightOptions = highlightOptions(
+            weight = 2,
+            color = "#35264C",
+            fillOpacity = 0.3,
+            bringToFront = FALSE
+          )
+        )
+    }
+    l
   })
 
   p3_filtered_summary <- reactive({
-    scoped_data %>%
+    p3_state_year %>%
       filter(year >= input$p3_year_range[1], year <= input$p3_year_range[2]) %>%
       group_by(stateCode) %>%
-      summarise(total_disasters = n(), years_active = n_distinct(year), .groups = "drop") %>%
+      summarise(
+        total_disasters = sum(total_disasters),
+        years_active = n_distinct(year),
+        .groups = "drop"
+      ) %>%
       left_join(sheldus_summary %||% tibble(stateCode = character()), by = "stateCode") %>%
       left_join(state_centroids, by = c("stateCode" = "state_abbr")) %>%
       left_join(state_mapping, by = "stateCode") %>%
+      filter(!is.na(lat), !is.na(lng)) %>%
       mutate(
         total_prop_dmg   = replace_na(total_prop_dmg, 0),
         total_fatalities = replace_na(total_fatalities, 0),
         total_fema_asst  = total_prop_dmg * 0.15,
         dmg_billions     = round(total_prop_dmg / 1e9, 2)
       )
-  })
+  }) %>% bindCache(input$p3_year_range)
 
   observe({
     df <- p3_filtered_summary()
     req(nrow(df) > 0)
     metric_col <- input$p3_map_metric
     vals <- df[[metric_col]]
-    radii <- scales::rescale(vals, to = c(6, 32))
-    pal <- colorNumeric(palette = c("#fff7bc", "#fec44f", "#d95f0e", "#8B0000"), domain = df$total_disasters)
+    metric_label <- names(p3_metric_choices)[p3_metric_choices == metric_col]
+    metric_label <- if (length(metric_label) > 0) metric_label[1] else metric_col
+    radius_vals <- sqrt(pmax(vals, 0))
+    if (length(unique(radius_vals[is.finite(radius_vals)])) <= 1) {
+      radii <- rep(15, nrow(df))
+    } else {
+      radii <- scales::rescale(radius_vals, to = c(7, 26))
+    }
+
+    pal <- colorNumeric(
+      palette = mako_colors,
+      domain = vals
+    )
+    df <- df %>%
+      mutate(
+        marker_radius = radii,
+        marker_fill = pal(vals),
+        metric_value = vals
+      )
+
     leafletProxy("disaster_map", data = df) %>%
       clearMarkers() %>%
       addCircleMarkers(
-        lng = ~lng, lat = ~lat, radius = radii, layerId = ~stateCode,
-        fillColor = ~ pal(total_disasters), fillOpacity = 0.8,
-        color = "#fff", weight = 1,
-        label = ~ paste0(stateName, ": ", vals)
+        lng = ~lng, lat = ~lat, 
+        radius = ~marker_radius,
+        layerId = ~stateCode,
+        fillColor = ~marker_fill,
+        fillOpacity = 0.72,
+        color = "#ffffff",
+        weight = 1.5,
+        opacity = 0.95,
+        label = ~lapply(paste0(
+          "<strong>", stateName, "</strong><br/>",
+          metric_label, ": ", comma(metric_value), "<br/>",
+          "Total disasters: ", comma(total_disasters)
+        ), HTML),
+        labelOptions = labelOptions(
+          style = list(
+            "font-weight" = "normal",
+            padding = "6px 10px",
+            "border-radius" = "6px",
+            border = "1px solid #d8e2ec"
+          ),
+          textsize = "13px",
+          direction = "auto"
+        )
       )
   })
 
@@ -1395,30 +1482,37 @@ server <- function(input, output, session) {
   output$p3_panel_text <- renderUI({
     req(p3_panel_row())
     row <- p3_panel_row()
-    haz <- scoped_data %>%
-      filter(stateCode == selected_p3_state()) %>%
-      count(incidentType) %>%
+    haz <- p3_state_hazard_year %>%
+      filter(
+        stateCode == selected_p3_state(),
+        year >= input$p3_year_range[1], year <= input$p3_year_range[2]
+      ) %>%
+      group_by(incidentType) %>%
+      summarise(n = sum(n), .groups = "drop") %>%
       slice_max(n, n = 1)
+    top_hazard <- if (nrow(haz) > 0) haz$incidentType[1] else "N/A"
     HTML(paste0(
       "<strong>", row$stateName[1], "</strong> has experienced <strong>", row$total_disasters[1],
       "</strong> FEMA-declared disasters in this period. The most frequent hazard is <strong>",
-      haz$incidentType[1], "</strong>. Total estimated economic impact reached <strong>$",
+      top_hazard, "</strong>. Total estimated economic impact reached <strong>$",
       round(row$dmg_billions[1], 1), "B</strong>."
     ))
   })
 
   output$p3_chart_hazard <- renderPlotly({
     req(selected_p3_state())
-    haz_data <- scoped_data %>%
+    haz_data <- p3_state_hazard_year %>%
       filter(
         stateCode == selected_p3_state(),
         year >= input$p3_year_range[1], year <= input$p3_year_range[2]
       ) %>%
-      count(incidentType, sort = TRUE) %>%
+      group_by(incidentType) %>%
+      summarise(n = sum(n), .groups = "drop") %>%
+      arrange(desc(n)) %>%
       slice_head(n = 5)
     plot_ly(haz_data,
       x = ~n, y = ~ reorder(incidentType, n), type = "bar",
-      orientation = "h", marker = list(color = "#4a90d9")
+      orientation = "h", marker = list(color = mako_line)
     ) %>%
       layout(
         margin = list(l = 0, r = 10, t = 0, b = 30),
@@ -1430,15 +1524,18 @@ server <- function(input, output, session) {
 
   output$p3_chart_ts <- renderPlotly({
     req(selected_p3_state())
-    ts_data <- scoped_data %>%
+    ts_data <- p3_state_year %>%
       filter(
         stateCode == selected_p3_state(),
         year >= input$p3_year_range[1], year <= input$p3_year_range[2]
       ) %>%
-      count(year)
+      complete(
+        year = seq(input$p3_year_range[1], input$p3_year_range[2]),
+        fill = list(total_disasters = 0)
+      )
     plot_ly(ts_data,
-      x = ~year, y = ~n, type = "scatter", mode = "lines+markers",
-      line = list(color = "#4a90d9")
+      x = ~year, y = ~total_disasters, type = "scatter", mode = "lines+markers",
+      line = list(color = mako_line)
     ) %>%
       layout(
         margin = list(l = 0, r = 10, t = 5, b = 30),
@@ -1461,9 +1558,11 @@ server <- function(input, output, session) {
       head(5)
   })
   output$about_hazard_pie <- renderPlotly({
-    plot_ly(national_hazard %>% head(6),
+    pie_data <- national_hazard %>% head(6)
+    plot_ly(pie_data,
       labels = ~hazard_type, values = ~count,
-      type = "pie", hole = 0.4
+      type = "pie", hole = 0.4,
+      marker = list(colors = viridisLite::mako(nrow(pie_data), begin = 0.15, end = 0.9))
     ) %>%
       layout(showlegend = FALSE, margin = list(l = 0, r = 0, t = 0, b = 0), paper_bgcolor = "rgba(0,0,0,0)")
   })
@@ -1471,9 +1570,9 @@ server <- function(input, output, session) {
     nat_ts <- scoped_data %>% count(year)
     plot_ly(nat_ts,
       x = ~year, y = ~n, type = "bar",
-      marker = list(color = "#4a90d9", opacity = 0.7)
+      marker = list(color = mako_line, opacity = 0.8)
     ) %>%
-      layout(yaxis = list(title = "Total Declarations"), xaxis = list(title = ""), plot_bgcolor = "#fafafa")
+      layout(yaxis = list(title = "Total Declarations"), xaxis = list(title = ""), plot_bgcolor = "#f7f9fb")
   })
 }
 
